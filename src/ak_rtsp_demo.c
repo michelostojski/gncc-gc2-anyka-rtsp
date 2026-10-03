@@ -1,4 +1,19 @@
 /*
+ * EDUCATIONAL MAP OF THIS SOURCE
+ *
+ * 1. Headers/constants      -> SDK APIs, GPIO paths, ISP modes, defaults
+ * 2. AE/global state        -> camera exposure data and shared thread state
+ * 3. CLI                    -> command-line configuration
+ * 4. Utility functions      -> socket output and integer parsing
+ * 5. IR functions           -> GPIO + IR-cut + ISP DAY/NIGHT transitions
+ * 6. IR thread              -> automatic day/night state machine
+ * 7. Web server             -> HTTP UI and control requests
+ * 8. Snapshot               -> VI frame -> MJPEG/JPEG -> HTTP response
+ * 9. VI initialization      -> sensor + channels + capture + ISP startup
+ * 10. Signals               -> graceful shutdown request
+ * 11. main()                -> overall initialization, runtime, cleanup
+ */
+/*
  * ak_rtsp_demo.c
  *
  * Anyka VI + RTSP demo with:
@@ -349,6 +364,10 @@ static struct option option_long[] = {
 /* Utilities                                                                 */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Reliable socket output.
+ * Repeatedly calls send() until the complete buffer has been transmitted.
+ * This is needed because send() may write only part of the requested data.
+ */
 static int send_all(int fd, const char *buf, size_t len)
 {
     size_t sent = 0;
@@ -373,6 +392,10 @@ static int send_all(int fd, const char *buf, size_t len)
 }
 
 
+/* EDUCATIONAL BLOCK: Command-line integer validation.
+ * Converts a decimal string to an int and rejects invalid, zero,
+ * negative, or excessively large values.
+ */
 static int parse_positive_int(const char *value, int *result)
 {
     char *end = NULL;
@@ -401,6 +424,9 @@ static int parse_positive_int(const char *value, int *result)
 /* IR GPIO                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Write a value to a Linux sysfs GPIO/control file.
+ * The camera exposes IR-cut and IR-LED controls as pseudo-files.
+ */
 static int ir_write(const char *path, const char *value)
 {
     int fd;
@@ -446,6 +472,10 @@ static int ir_write(const char *path, const char *value)
 /* ISP switching                                                             */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Change the Anyka ISP profile.
+ * The caller holds g_ir_mutex while this function runs, hence '_locked'.
+ * mode selects the DAY or NIGHT ISP configuration.
+ */
 static int ir_switch_isp_locked(int mode)
 {
     int ret;
@@ -480,6 +510,10 @@ static int ir_switch_isp_locked(int mode)
 /* IR transitions                                                            */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Complete DAY transition.
+ * Sets the IR-cut mechanism, disables IR illumination, then selects
+ * the DAY ISP profile. The result records whether any step failed.
+ */
 static int ir_set_day_locked(void)
 {
     int result = 0;
@@ -528,6 +562,10 @@ static int ir_set_day_locked(void)
 }
 
 
+/* EDUCATIONAL BLOCK: Complete NIGHT transition.
+ * Sets the IR-cut mechanism, enables IR illumination, then selects
+ * the NIGHT ISP profile.
+ */
 static int ir_set_night_locked(void)
 {
     int result = 0;
@@ -580,6 +618,10 @@ static int ir_set_night_locked(void)
 /* AE                                                                        */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Read the current Auto-Exposure state from the ISP.
+ * The structure contains measured luma plus analogue/digital gain and
+ * exposure information maintained by the camera ISP.
+ */
 static int ir_read_ae(AK_AE_RUN *ae)
 {
     if (ae == NULL)
@@ -594,6 +636,9 @@ static int ir_read_ae(AK_AE_RUN *ae)
 }
 
 
+/* EDUCATIONAL BLOCK: Extract only the AE values used by the application.
+ * This gives the web UI and diagnostic code a simple luma/gain interface.
+ */
 static int ir_read_ae_values(int *luma, int *gain, int *darkflag)
 {
     AK_AE_RUN ae;
@@ -616,6 +661,10 @@ static int ir_read_ae_values(int *luma, int *gain, int *darkflag)
 /* AUTO detector                                                             */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Background DAY/NIGHT control thread.
+ * Runs independently of RTSP and the HTTP server. In AUTO mode it asks
+ * the ISP for the current day/night level and performs transitions.
+ */
 static void *ir_thread(void *arg)
 {
     int previous_mode = -1;
@@ -652,10 +701,12 @@ static void *ir_thread(void *arg)
         fprintf(stderr, "[ir] auto d/n param set (piotr full arrays)\n");
     }
 
+    /* EDUCATIONAL BLOCK: Repeating AUTO-control loop; each iteration checks the current mode and ISP decision. */
     while (1) {
         int mode;
         int cur;
 
+        /* EDUCATIONAL BLOCK: Protect shared IR state while checking whether the worker should continue. */
         pthread_mutex_lock(&g_ir_mutex);
         if (!g_ir_run) {
             pthread_mutex_unlock(&g_ir_mutex);
@@ -664,6 +715,7 @@ static void *ir_thread(void *arg)
         mode = g_ir_mode;
         pthread_mutex_unlock(&g_ir_mutex);
 
+        /* EDUCATIONAL BLOCK: Log a mode transition only when the selected mode changes. */
         if (mode != previous_mode) {
             if (mode == 0)
                 fprintf(stderr, "[ir] mode changed to AUTO\n");
@@ -675,6 +727,7 @@ static void *ir_thread(void *arg)
         }
 
         /* FORCE modes: handled by the web handler */
+        /* EDUCATIONAL BLOCK: FORCE DAY/NIGHT bypasses AUTO decisions; the web handler already performed the requested transition. */
         if (mode != 0) {
             sleep(IR_POLL_SEC);
             continue;
@@ -686,6 +739,7 @@ static void *ir_thread(void *arg)
         cur = ak_vpss_isp_get_auto_day_night_level(g_ir_status ? 1 : 0);
 
 
+        /* EDUCATIONAL BLOCK: Apply an ISP-reported state change only when the returned state is valid and differs from the current state. */
         if (cur >= 0 && cur != g_ir_status) {
             pthread_mutex_lock(&g_ir_mutex);
             if (g_ir_run && g_ir_mode == 0) {
@@ -714,6 +768,9 @@ static void *ir_thread(void *arg)
 /* IR start/stop                                                             */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Start automatic IR control.
+ * Initializes the DAY state and creates the pthread that runs ir_thread().
+ */
 static int ir_start(void)
 {
     int ret;
@@ -770,6 +827,9 @@ static int ir_start(void)
 }
 
 
+/* EDUCATIONAL BLOCK: Stop automatic IR control.
+ * Signals the worker thread to exit, waits for it, and turns the IR LED off.
+ */
 static void ir_stop(void)
 {
     int should_join;
@@ -800,6 +860,10 @@ static void ir_stop(void)
 /* ------------------------------------------------------------------------- */
 
 
+/* EDUCATIONAL BLOCK: Build and send the camera's HTML control page.
+ * The page is generated entirely in C and includes current ISP/AE state,
+ * RTSP URLs, a snapshot preview, and DAY/NIGHT/AUTO controls.
+ */
 static int web_page(int fd)
 {
     char response[8192];
@@ -926,6 +990,10 @@ static int snapshot_serve(int fd);
 static int snapshot_init(void);
 static void snapshot_exit(void);
 
+/* EDUCATIONAL BLOCK: HTTP request dispatcher.
+ * Examines the requested URL and maps /set?mode=... or /snapshot.jpg
+ * to the corresponding camera operation.
+ */
 static int web_handle(int fd)
 {
     char request[2048];
@@ -943,6 +1011,7 @@ static int web_handle(int fd)
 
     request[len] = '\0';
 
+    /* EDUCATIONAL BLOCK: Force the camera into DAY mode when the HTTP request matches this URL. */
     if (strncmp(
             request,
             "GET /set?mode=day",
@@ -963,6 +1032,7 @@ static int web_handle(int fd)
         return web_page(fd);
     }
 
+    /* EDUCATIONAL BLOCK: Force the camera into NIGHT mode when the HTTP request matches this URL. */
     if (strncmp(
             request,
             "GET /set?mode=night",
@@ -983,6 +1053,7 @@ static int web_handle(int fd)
         return web_page(fd);
     }
 
+    /* EDUCATIONAL BLOCK: Return control to the automatic DAY/NIGHT detector. */
     if (strncmp(
             request,
             "GET /set?mode=auto",
@@ -1013,10 +1084,15 @@ static int web_handle(int fd)
 /* Web thread                                                                */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: HTTP server worker thread.
+ * Waits for TCP clients with accept(), handles one request, then closes
+ * the connection before waiting for the next client.
+ */
 static void *web_thread(void *arg)
 {
     (void)arg;
 
+    /* EDUCATIONAL BLOCK: Server accept loop; process HTTP clients until web_stop() clears g_web_run. */
     while (1) {
         int client_fd;
 
@@ -1038,6 +1114,7 @@ static void *web_thread(void *arg)
             &client_len
         );
 
+        /* EDUCATIONAL BLOCK: Handle accept() errors; EINTR is harmless, while shutdown is detected through g_web_run. */
         if (client_fd < 0) {
             if (errno == EINTR)
                 continue;
@@ -1067,6 +1144,10 @@ static void *web_thread(void *arg)
 /* Web start/stop                                                            */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Create and start the HTTP server.
+ * Creates a TCP socket, enables address reuse, binds port 80, starts
+ * listening, and launches web_thread().
+ */
 static int web_start(void)
 {
     struct sockaddr_in addr;
@@ -1183,6 +1264,10 @@ static int web_start(void)
 }
 
 
+/* EDUCATIONAL BLOCK: Shut down the HTTP server.
+ * Stops accepting clients, closes the listening socket, and joins the
+ * server thread so shutdown is clean.
+ */
 static void web_stop(void)
 {
     int should_join;
@@ -1238,6 +1323,10 @@ static void web_stop(void)
 static void *g_jpeg_enc = NULL;
 static pthread_mutex_t g_jpeg_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* EDUCATIONAL BLOCK: Initialize the persistent MJPEG encoder.
+ * The encoder is opened once; individual requests later submit one
+ * captured VI frame for JPEG encoding.
+ */
 static int snapshot_init(void)
 {
     struct encode_param ep;
@@ -1266,11 +1355,16 @@ static int snapshot_init(void)
     return 0;
 }
 
+/* EDUCATIONAL BLOCK: Release the MJPEG encoder during shutdown. */
 static void snapshot_exit(void)
 {
     if (g_jpeg_enc) { ak_venc_close(g_jpeg_enc); g_jpeg_enc = NULL; }
 }
 
+/* EDUCATIONAL BLOCK: Capture one VI frame and return it as JPEG over HTTP.
+ * A mutex prevents concurrent requests from using the encoder/frame path
+ * at the same time.
+ */
 static int snapshot_serve(int fd)
 {
     struct video_input_frame vif;
@@ -1289,11 +1383,14 @@ static int snapshot_serve(int fd)
 
     memset(&vif, 0, sizeof(vif));
     int _gr = ak_vi_get_frame(vi_handle, &vif);
+    /* EDUCATIONAL BLOCK: A valid VI frame is available; select the configured sub-channel image. */
     if (_gr == 0) {
         struct frame *f = &vif.vi_frame[VIDEO_CHN_SUB];
+        /* EDUCATIONAL BLOCK: Only attempt JPEG encoding when the captured frame contains valid data. */
         if (f->data && f->len > 0) {
             memset(&vs, 0, sizeof(vs));
             ak_venc_send_frame(g_jpeg_enc, f->data, f->len, &vs);
+            /* EDUCATIONAL BLOCK: The encoder returned JPEG data; construct HTTP headers and send the image. */
             if (vs.data && vs.len > 0) {
                 int hl = snprintf(hdr, sizeof(hdr),
                     "HTTP/1.1 200 OK\r\n"
@@ -1325,6 +1422,10 @@ static int snapshot_serve(int fd)
 /* VI initialization                                                         */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Initialize the Anyka Video Input pipeline.
+ * Matches the sensor configuration, opens VI, discovers resolution,
+ * configures main/sub channels, starts capture, and selects DAY ISP mode.
+ */
 static void *ak_rtsp_vi_init(void)
 {
     void *handle;
@@ -1339,6 +1440,7 @@ static void *ak_rtsp_vi_init(void)
             "MARKER: before ak_vi_match_sensor(%s)\n",
             FIRST_PATH);
 
+    /* EDUCATIONAL BLOCK: Load/match the sensor configuration required by the VI driver. */
     if (ak_vi_match_sensor(FIRST_PATH) < 0) {
         ak_print_error_ex(
             "match sensor failed\n"
@@ -1355,6 +1457,7 @@ static void *ak_rtsp_vi_init(void)
 
     handle = ak_vi_open(VIDEO_DEV0);
 
+    /* EDUCATIONAL BLOCK: Stop initialization if the VI device could not be opened. */
     if (handle == NULL) {
         ak_print_error_ex(
             "vi open failed\n"
@@ -1376,6 +1479,7 @@ static void *ak_rtsp_vi_init(void)
     fprintf(stderr,
             "MARKER: before ak_vi_get_sensor_resolution\n");
 
+    /* EDUCATIONAL BLOCK: Query the physical sensor resolution; fall back to defaults if the query fails. */
     if (ak_vi_get_sensor_resolution(
             handle,
             &resolution)) {
@@ -1430,6 +1534,7 @@ static void *ak_rtsp_vi_init(void)
             i_sub_width,
             i_sub_height);
 
+    /* EDUCATIONAL BLOCK: Apply the main/sub output dimensions to the VI channels. */
     if (ak_vi_set_channel_attr(
             handle,
             &attr)) {
@@ -1445,6 +1550,7 @@ static void *ak_rtsp_vi_init(void)
         "start capture ...\n"
     );
 
+    /* EDUCATIONAL BLOCK: Start the VI capture engine so frames become available to the encoder/RTSP pipeline. */
     if (ak_vi_capture_on(handle)) {
         ak_print_error_ex(
             "ak_vi_capture_on failed\n"
@@ -1482,6 +1588,7 @@ static void *ak_rtsp_vi_init(void)
 /* CLI help                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Print command-line help from option_long[]. */
 static int help_hint(void)
 {
     size_t i;
@@ -1515,6 +1622,9 @@ static int help_hint(void)
 /* Signals                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Common signal handler.
+ * It only changes the shutdown flag; the main thread performs cleanup.
+ */
 static void process_signal(int sig)
 {
     (void)sig;
@@ -1523,6 +1633,7 @@ static void process_signal(int sig)
 }
 
 
+/* EDUCATIONAL BLOCK: Register process termination and diagnostic signals. */
 static int register_signal(void)
 {
     signal(SIGINT, process_signal);
@@ -1542,6 +1653,10 @@ static int register_signal(void)
 /* Main                                                                      */
 /* ------------------------------------------------------------------------- */
 
+/* EDUCATIONAL BLOCK: Program entry point and complete camera startup sequence.
+ * Parses configuration, initializes VI/ISP, starts RTSP, IR control,
+ * HTTP control, snapshot support, then waits until a signal requests exit.
+ */
 int main(int argc, char **argv)
 {
     int ret;
@@ -1553,14 +1668,16 @@ int main(int argc, char **argv)
 
     register_signal();
 
-    while ((option = getopt_long(
+    /* EDUCATIONAL BLOCK: Parse command-line options until getopt_long() reports no more. */
+
                 argc,
                 argv,
                 "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:",
                 option_long,
                 NULL)) != -1) {
 
-        switch (option) {
+        /* EDUCATIONAL BLOCK: Select the variable affected by the current CLI option. */
+
         case 'h':
             help_hint();
             return 0;
@@ -1684,6 +1801,7 @@ int main(int argc, char **argv)
         }
     }
 
+    /* EDUCATIONAL BLOCK: Validate the encoder QP range before starting hardware. */
     if (i_minqp > i_maxqp) {
         fprintf(stderr,
                 "minqp must be <= maxqp\n");
@@ -1741,6 +1859,7 @@ int main(int argc, char **argv)
      */
     ret = akuio_pmem_init();
 
+    /* EDUCATIONAL BLOCK: Abort startup if the Anyka physical-memory subsystem cannot initialize. */
     if (ret != 0) {
         fprintf(stderr,
                 "akuio_pmem_init failed: %d\n",
@@ -1751,6 +1870,7 @@ int main(int argc, char **argv)
 
     vi_handle = ak_rtsp_vi_init();
 
+    /* EDUCATIONAL BLOCK: Abort if the camera's Video Input pipeline could not be initialized. */
     if (vi_handle == NULL) {
         fprintf(stderr,
                 "VI initialization failed\n");
@@ -1866,6 +1986,7 @@ int main(int argc, char **argv)
 
     ret = ak_rtsp_init(&param);
 
+    /* EDUCATIONAL BLOCK: Abort if the RTSP subsystem rejects the channel configuration. */
     if (ret != 0) {
         fprintf(stderr,
                 "ak_rtsp_init failed: %d\n",
@@ -1881,6 +2002,7 @@ int main(int argc, char **argv)
         VIDEO_CHN_MAIN
     );
 
+    /* EDUCATIONAL BLOCK: Main RTSP stream must start successfully before the sub-stream is attempted. */
     if (ret != 0) {
         fprintf(stderr,
                 "ak_rtsp_start(main) failed: %d\n",
@@ -1895,6 +2017,7 @@ int main(int argc, char **argv)
         VIDEO_CHN_SUB
     );
 
+    /* EDUCATIONAL BLOCK: If the sub-stream fails, stop the already-started main stream and exit. */
     if (ret != 0) {
         fprintf(stderr,
                 "ak_rtsp_start(sub) failed: %d\n",
@@ -1928,6 +2051,7 @@ int main(int argc, char **argv)
 
     run_flag = AK_TRUE;
 
+    /* EDUCATIONAL BLOCK: Keep the process alive while worker threads perform camera services. */
     while (run_flag)
         ak_sleep_ms(1000);
 
