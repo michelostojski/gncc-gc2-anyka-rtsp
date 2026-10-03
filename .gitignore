@@ -1,0 +1,28 @@
+# proprietary Anyka SDK libs - extract from your own firmware, do not redistribute
+*.so
+*.so.*
+lib/
+libs/
+LibAK/
+
+# built squashfs images (contain proprietary libs)
+*.sqsh
+*.sqsh.*
+app_current.bin
+app_new.bin
+
+# build output
+ak_rtsp_demo_v104
+*.o
+core
+core.*
+
+# credentials - never commit
+wpa_supplicant.conf
+*wifi*.conf
+anyka_cfg.ini
+
+# editor / OS
+*~
+.DS_Store
+*.swp
