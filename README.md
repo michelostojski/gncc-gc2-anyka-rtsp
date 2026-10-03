@@ -18,7 +18,12 @@ required** — and provides:
 
 
 ---
+## Educational
 
+`src/ak_rtsp_demo.c` is heavily commented to explain the reverse-engineering:
+SDK ABIs (verified from the vendor `.so` files), the day/night state machine,
+observed sensor values, and the ISP/encoder interactions. It's meant to be
+read as much as compiled — a map of how these Anyka cameras actually work.
 ## Hardware
 
 | | |
